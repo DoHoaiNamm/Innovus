@@ -1,0 +1,169 @@
+##############################################################################
+# Lab 13: CTS Pre-Optimization Setup and Execution
+##############################################################################
+
+# 1. Setup Directories and Restore Database
+set rpt "Lab13.Cts_reports"
+set out "Lab13.Cts_outputs"
+foreach dir [list $rpt $out] {
+    if {![file exists $dir]} {
+        file mkdir $dir
+        puts "INFO: Creating directory $dir"
+    }
+}
+
+#read_db ../Lab11.Placement.part3/Lab11.Placement_outputs/Lab11aftermove
+read_db ../Lab11.Placement.part3/Lab11.Placement_outputs/Lab11test.dat
+set PREFIX "Lab13.Cts.pre"
+
+set_db cts_target_max_transition_time 0.05
+set_db cts_target_skew 0.1
+set_db opt_hold_target_slack 0.05
+set_db opt_setup_target_slack 0.0
+
+# 4. Timing Analysis Configuration
+#set_db analysis_mode ocv
+set_db timing_analysis_type ocv
+#set_db cppr both
+set_db timing_analysis_cppr both
+set_db cts_use_inverters auto
+
+# 2. Clock Cell Selection
+#specify buffter for H-Tree
+
+#set target constraints for the balanced tree
+# Define specific clock buffers and inverters
+set_db cts_buffer_cells {CLKBUFX6 CLKBUFX8 CLKBUFX12 CLKBUFX16}
+set_db cts_inverter_cells {CLKINVX4 CLKINVX8 CLKINVX16}
+
+# Define Integrated Clock Gating (ICG) and Logic cells
+set_db cts_logic_cells {CLKAND2X4 CLKAND2X8 CLKMX2X4 CLKMX2X8}
+set_db cts_clock_gating_cells {TLATNTSCAX4 TLATNTSCAX6 TLATNTSCAX8 TLATNTSCAX12 TLATNTSCAX16}
+
+#create the clock tre specification and build
+set_db cts_inverter_cells {CLKINVX8 CLKINVX12}
+
+create_route_rule -name 2w2s \
+  -width {Metal1 0.12 Metal2 0.16 Metal3 0.16 Metal4 0.16 Metal5 0.16 Metal6 0.16 Metal7 0.16 Metal8 0.16 Metal9 0.16 Metal10 0.44 Metal11 0.44} \
+  -spacing {Metal1 0.12 Metal2 0.14 Metal3 0.14 Metal4 0.14 Metal5 0.14 Metal6 0.14 Metal7 0.14 Metal8 0.14 Metal9 0.14 Metal10 0.40 Metal11 0.40} \
+  -generate_via
+
+# 4. Configure Clock Routing Layers
+# Restricts clock to Metal5 and Metal6 to avoid congestion
+create_route_type -name clkroute \
+  -route_rule 2w2s \
+  -bottom_preferred_layer Metal5 \
+  -top_preferred_layer Metal9
+
+#set constraint
+set_interactive_constraint_modes [all_constraint_modes -active]
+set_clock_uncertainty -setup 0.1 [get_clocks *]
+set_clock_uncertainty -hold 0.05 [get_clocks *]
+set_false_path -from [all_inputs]
+#set max fanout
+set_db design_top_routing_layer 11
+set_db cts_top_fanout_threshold 40
+set_db opt_fix_fanout_load true
+set_db cts_max_fanout 15
+set_max_fanout 15 [get_db designs]
+
+create_clock [get_ports {clk_pin}] -name clk -period 1.7 -waveform {0 0.85}
+#set false path
+set_false_path -from [all_inputs] -to [all_registers]
+set_false_path -from [all_registers] -to [all_outputs]
+set_false_path -to [get_pins -hier */SI]
+#set max cap
+set_max_capacitance 0.1 [get_ports*]
+
+set_max_fanout 15 [get_nets *]
+set_false_path -from [all_inputs] -to [all_registers]
+set_false_path -from [all_registers] -to [all_outputs]
+set_false_path -to [get_pins -hier */SI]
+
+set_interactive_constraint_modes { }
+
+
+#set_db cts_route_type_trunk clkroute
+#set_db cts_route_type_leaf clkroute
+# Prevent CTS from using weak drivers or delay cells
+#set_db [get_lib_cells {CLKINVX1 CLKBUFX2 CLKBUFX3}] .avoid_cts true
+#set_db [get_lib_cells *DEL*] .avoid_cts true
+
+# ==============================================================================
+# 2b. CTS Exceptions (Refined for Standard Logic + Single Clock In)
+# ==============================================================================
+
+# 1. Explicitly confirm ICG cells as Nonstop Pins
+# This ensures the clock traces through gating logic to reach all FFs.
+#set_db [get_cells -hier -filter "is_integrated_clock_gating == true"] .cts_pin_type nonstop
+
+# 2. Define Exclude Pins for Test/Scan Logic
+# If your netlist has scan-chain pins (like 'scan_en' or 'scan_in') that 
+# connect to clock pins but aren't part of the functional clock tree, 
+# exclude them to keep the tree clean.
+# set_db [get_pins {u_top/scan_enable_reg/CK}] .cts_pin_type exclude
+
+# 3. Explicit Stop Pins
+# Not needed because all your FFs are recognized as implicit stop pins.
+
+# 4. Floating & Ignore Pins 
+# Not needed since you have no Macros/RAMs or Clock Output ports.
+
+#--------------------------------------
+# ==============================================================================
+# 2b. Define CTS Exceptions (Added for Lab 13)
+# Reference: PDF pp. 34-38
+# ==============================================================================
+
+# 1. Define Explicit Stop Pins (Sink Pins)
+# Use this for pins that should be used for delay balancing but aren't detected
+# set_db [get_pins {inst_name/pin_name}] .cts_is_disabled false
+# set_ccopt_property sink_type stop -pin [get_pins {u_mem/clk_in}]
+
+# 2. Define Exclude Pins
+# Pins excluded from clock tree skew and delay balancing (p. 37)
+#set_db [get_pins {u_debug_module/clk}] .cts_pin_type exclude
+
+# 3. Define Float Pins (p. 37)
+# Used for macros with internal insertion delay to balance against other sinks
+# Example: 1.8ns target delay for a memory macro
+#set_db [get_pins {u_memory/CLK}] .cts_pin_type float
+#set_db [get_pins {u_memory/CLK}] .cts_float_pin_insertion_delay 1.8
+
+#pre CTS
+#place_design
+#place_opt_design
+#opt_design -pre_cts -drv
+# 4. Define Ignore Pins (p. 38)
+# Pins completely ignored by the CTS engine
+#set_db [get_pins {u_analog_block/ref_clk}] .cts_pin_type ignore
+#time_design -pre_cts
+
+#optimize truoc khi build
+opt_design -pre_cts -drv
+time_design -pre_cts 
+
+#tao spec va CTS
+create_clock_tree_spec -out_file ccopt.spec
+source ccopt.spec
+ccopt_design
+# 5. Define Through Pins (p. 38)
+# Pins that the tool should "trace through" without stopping or balancing
+#set_db [get_pins {u_logic_gate/A}] .cts_pin_type through
+#--------------------------------------
+puts "INFO: CTS Exceptions for standard logic initialized."
+
+# 3. CTS Design Targets
+#set_db [get_db designs *] .cts_target_max_transition 0.2
+#set_db [get_db designs *] .cts_target_skew 0.1
+#set_db [get_db designs *] .opt_hold_target_slack 0.05
+#set_db [get_db designs *] .opt_setup_target_slack 0.0
+
+# 5. Execute Clock Concurrent Optimization (CCOpt)
+# In Stylus CUI, clock_opt_design is the preferred top-level command
+#clock_opt_design -out_dir $rpt/${PREFIX}.cts_opt
+#clock_opt_design
+source ~/practice/scripts_nam/find_high_fanout.tcl
+# 6. Save Result
+write_db $out/${PREFIX}.dat
+puts "INFO: Lab 13 CTS Pre-Opt complete."
